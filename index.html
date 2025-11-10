@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CleanCall — Minimal 12</title>
+<!-- Single-file static demo: PeerJS-based front-end only -->
+<style>
+  :root{
+    --bg:#ffffff;
+    --fg:#0b0b0b;
+    --muted:#666666;
+    --slot-gap:10px;
+    --top-pad:54px; /* ensures top-left name doesn't overlap grid */
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial}
+  /* Top-left name: fixed, always visible, not overlapping */
+  .top-left{
+    position:fixed; left:18px; top:12px; z-index:1000;
+    font-weight:800; font-size:18px; letter-spacing:0.2px;
+    pointer-events:none; /* don't block clicks */
+  }
+
+  /* Landing center with two outline buttons */
+  .center-ui{
+    position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center; gap:18px; z-index:100;
+  }
+  .btns{display:flex; gap:14px; align-items:center}
+  button.btn{
+    padding:12px 18px; border-radius:6px; font-weight:700; font-size:15px;
+    background:transparent; border:2px solid var(--fg); color:var(--fg); cursor:pointer;
+  }
+  input.textfield{ padding:10px 12px; border-radius:6px; border:1px solid #ddd; min-width:320px; font-size:14px; }
+
+  /* Room view fullscreen */
+  .room{
+    display:none; position:fixed; top:0; left:0; width:100%; height:100%; box-sizing:border-box; padding:18px 18px 110px 18px;
+  }
+
+  /* Grid area top padding reserved for top-left name visual safety */
+  .grid-wrap{ position:relative; width:100%; height:calc(100% - 120px); padding-top: var(--top-pad); box-sizing:border-box; }
+
+  /* Active participants grid: dynamic columns based on count */
+  .grid{
+    width:100%; height:100%;
+    display:grid;
+    gap:var(--slot-gap);
+    box-sizing:border-box;
+  }
+
+  /* Each slot: sharp rectangle, full color background, video fills */
+  .slot{
+    position:relative; overflow:hidden; background:#000; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 6px 18px rgba(0,0,0,0.06);
+  }
+  video{ width:100%; height:100%; object-fit:cover; display:block; }
+
+  /* slot overlay: top-left info */
+  .slot-overlay{ position:absolute; left:8px; top:8px; z-index:5; color:#fff; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,0.4); }
+  .slot-controls{ position:absolute; right:8px; top:8px; z-index:6; display:flex; gap:6px; }
+  .slot-controls button{ background:rgba(255,255,255,0.95); border:1px solid #ddd; padding:6px 8px; font-size:12px; cursor:pointer; border-radius:4px; }
+
+  /* bottom controls */
+  .controls-bar{ position:fixed; left:0; right:0; bottom:0; height:92px; display:flex; align-items:center; justify-content:space-between; padding:12px 18px; box-sizing:border-box; z-index:90; border-top:1px solid #f0f0f0; background:linear-gradient(transparent, rgba(255,255,255,0.95)); }
+  .controls-left{ display:flex; gap:10px; align-items:center; }
+  .controls-right{ display:flex; gap:10px; align-items:center; }
+
+  .control{ padding:10px 12px; border:1px solid #ddd; background:transparent; border-radius:6px; cursor:pointer; font-weight:700; }
+
+  /* Room list modal (simple area on landing when clicking Join) */
+  .room-list-wrap{ display:flex; flex-direction:column; gap:12px; align-items:center; }
+  .rooms{ display:flex; flex-direction:column; gap:10px; max-height:320px; overflow:auto; padding:6px; width:420px; }
+  .room-item{ display:flex; align-items:center; gap:10px; padding:10px; border:1px solid #eee; width:100%; justify-content:space-between; }
+  .room-color{ width:44px; height:44px; border-radius:4px; }
+
+  /* small screens adjust */
+  @media (max-width:900px){
+    .center-ui{ left:50%; top:46%; transform:translate(-50%,-46%); }
+    .rooms{ width:92vw; max-height:260px; }
+    .controls-bar{ flex-direction:column; height:auto; padding:10px; gap:10px; }
+    .grid-wrap{ height: calc(100% - 180px); }
+  }
+</style>
+</head>
+<body>
+  <!-- Top-left fixed name -->
+  <div class="top-left" id="brandName">BHARAT KUMAR PATEL</div>
+
+  <!-- Landing -->
+  <div class="center-ui" id="landing">
+    <div id="mainBtns" class="btns">
+      <button id="createBtn" class="btn">Create Room</button>
+      <button id="joinBtn" class="btn">Join Existing Room</button>
+    </div>
+
+    <!-- Create area (hidden until clicked) -->
+    <div id="createArea" style="display:none; margin-top:6px;">
+      <input id="roomName" class="textfield" placeholder="Room name (visible to everyone)" /><br/>
+      <input id="roomPass" class="textfield" placeholder="6-digit numeric password (e.g. 123456)" maxlength="6" /><br/>
+      <div style="height:8px"></div>
+      <div class="btns"><button id="confirmCreate" class="btn">Create</button></div>
+    </div>
+
+    <!-- Join area (room list) -->
+    <div id="joinArea" style="display:none; margin-top:8px;">
+      <div class="room-list-wrap">
+        <div style="font-weight:800; margin-bottom:4px;">Available Rooms</div>
+        <div class="rooms" id="roomsList"></div>
+        <div style="height:8px"></div>
+        <div class="btns"><button id="openCreateFromJoin" class="btn">Create Room</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Room view -->
+  <div class="room" id="roomView" aria-hidden="true">
+    <div class="grid-wrap">
+      <div id="grid" class="grid"></div>
+    </div>
+
+    <!-- bottom controls -->
+    <div class="controls-bar">
+      <div class="controls-left">
+        <button id="toggleCam" class="control">Camera Off</button>
+        <button id="toggleMic" class="control">Mute</button>
+        <button id="switchMode" class="control">Switch Video/Voice</button>
+        <button id="leaveRoom" class="control">Leave</button>
+      </div>
+      <div class="controls-right">
+        <div style="font-weight:700" id="roomMeta">Room: <span id="roomNameDisplay">—</span></div>
+        <button id="shareRoom" class="control">Share</button>
+      </div>
+    </div>
+  </div>
+
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+/*
+  CleanCall — updated index.html
+  - Static front-end only using PeerJS (public demo PeerServer)
+  - Room registry stored in localStorage with expiry of 7 days from last activity
+  - Password-protected for random joiners; invite link bypasses password
+  - Admin (creator) controls: mute, kick, invite (navigator.share fallback copy)
+  - 12 slots reserved but rendered dynamically: only active participants shown,
+    layout adapts to count so each active participant gets equal area.
+  - No chat/messages per user request.
+  - Colors applied to full slot background per provided palette.
+  - Important limitation: room list is only shared via localStorage on same browser/device.
+*/
+
+(() => {
+  // ---------- CONFIG ----------
+  const SLOT_COUNT = 12;
+  const COLORS = {
+    1: '#2d00f7ff',
+    2: '#6a00f4ff',
+    3: '#8900f2ff',
+    4: '#a100f2ff',
+    5: '#b100e8ff',
+    6: '#bc00ddff',
+    7: '#d100d1ff',
+    8: '#db00b6ff',
+    9: '#e500a4ff',
+    10:'#f20089ff',
+    11:'#ff0a54',
+    12:'#ff477e'
+  };
+  const ROOM_STORE_KEY = 'cleancall_rooms_v1';
+  const ROOM_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  // ---------- DOM ----------
+  const brandName = document.getElementById('brandName');
+  const landing = document.getElementById('landing');
+  const createBtn = document.getElementById('createBtn');
+  const joinBtn = document.getElementById('joinBtn');
+  const createArea = document.getElementById('createArea');
+  const createConfirm = document.getElementById('confirmCreate');
+  const roomNameInput = document.getElementById('roomName');
+  const roomPassInput = document.getElementById('roomPass');
+
+  const joinArea = document.getElementById('joinArea');
+  const roomsList = document.getElementById('roomsList');
+  const openCreateFromJoin = document.getElementById('openCreateFromJoin');
+
+  const roomView = document.getElementById('roomView');
+  const gridEl = document.getElementById('grid');
+  const roomNameDisplay = document.getElementById('roomNameDisplay');
+  const toggleCam = document.getElementById('toggleCam');
+  const toggleMic = document.getElementById('toggleMic');
+  const switchMode = document.getElementById('switchMode');
+  const leaveRoomBtn = document.getElementById('leaveRoom');
+  const shareBtn = document.getElementById('shareRoom');
+
+  // ---------- State ----------
+  let peer = null;
+  let myId = null;
+  let localStream = null;
+  let isAdmin = false;
+  let adminId = null;
+  let currentRoom = null; // {id, name, pass, creator, createdAt, lastActive}
+  const participants = {}; // peerId -> {slot, name, stream, conn (data)}
+  const slotForPeer = {}; // peerId -> slotNum
+  const peerForSlot = {}; // slotNum -> peerId
+
+  // ---------- Helpers: Rooms store ----------
+  function loadRooms(){
+    try{
+      const raw = localStorage.getItem(ROOM_STORE_KEY);
+      if(!raw) return {};
+      const obj = JSON.parse(raw);
+      // purge expired
+      const now = Date.now();
+      for(const id in obj){
+        if((obj[id].lastActive || obj[id].createdAt) + ROOM_EXPIRY_MS < now){
+          delete obj[id];
+        }
+      }
+      localStorage.setItem(ROOM_STORE_KEY, JSON.stringify(obj));
+      return obj;
+    }catch(e){ console.warn('loadRooms fail', e); return {}; }
+  }
+  function saveRooms(obj){
+    localStorage.setItem(ROOM_STORE_KEY, JSON.stringify(obj || {}));
+  }
+  function addOrUpdateRoom(meta){
+    const rooms = loadRooms();
+    rooms[meta.id] = meta;
+    rooms[meta.id].lastActive = Date.now();
+    saveRooms(rooms);
+  }
+  function removeRoom(id){
+    const rooms = loadRooms();
+    if(rooms[id]) delete rooms[id];
+    saveRooms(rooms);
+  }
+
+  // ---------- UI: Landing & Room list ----------
+  createBtn.onclick = ()=> {
+    createArea.style.display = createArea.style.display === 'none' ? 'block' : 'none';
+    joinArea.style.display = 'none';
+  };
+  joinBtn.onclick = ()=> {
+    joinArea.style.display = joinArea.style.display === 'none' ? 'block' : 'none';
+    createArea.style.display = 'none';
+    renderRoomList();
+  };
+  openCreateFromJoin.onclick = ()=> { createArea.style.display = 'block'; joinArea.style.display='none'; };
+
+  function renderRoomList(){
+    roomsList.innerHTML = '';
+    const rooms = loadRooms();
+    const arr = Object.values(rooms).sort((a,b)=> b.lastActive - a.lastActive);
+    if(arr.length === 0){
+      const p = document.createElement('div'); p.style.padding='10px'; p.style.color='#666'; p.textContent = 'No rooms yet.';
+      roomsList.appendChild(p);
+      return;
+    }
+    arr.forEach(r => {
+      const item = document.createElement('div'); item.className='room-item';
+      const left = document.createElement('div'); left.style.display='flex'; left.style.alignItems='center'; left.style.gap='10px';
+      const color = document.createElement('div'); color.className='room-color'; color.style.background = COLORS[r.slotColor || 1];
+      const title = document.createElement('div'); title.style.fontWeight='700'; title.textContent = r.name || 'Room';
+      left.appendChild(color); left.appendChild(title);
+      const right = document.createElement('div');
+      const joinBtn = document.createElement('button'); joinBtn.className='btn'; joinBtn.textContent='Join';
+      joinBtn.onclick = ()=> attemptJoinRoom(r.id);
+      right.appendChild(joinBtn);
+      item.appendChild(left); item.appendChild(right);
+      roomsList.appendChild(item);
+    });
+  }
+
+  // ---------- Room creation ----------
+  createConfirm.onclick = async ()=>{
+    const name = (roomNameInput.value || '').trim();
+    const pass = (roomPassInput.value || '').trim();
+    if(!name){ alert('Room name required'); return; }
+    if(!/^\d{6}$/.test(pass)){ alert('Password must be 6 digits'); return; }
+    // create Peer and mark as admin
+    try{
+      await createPeer();
+      isAdmin = true;
+      adminId = myId;
+      // create room metadata
+      const roomId = myId; // use peer id as room id so invite links contain admin id
+      const meta = { id: roomId, name, pass, creator: myId, createdAt: Date.now(), lastActive: Date.now(), slotColor: 1 };
+      addOrUpdateRoom(meta);
+      currentRoom = meta;
+      // assign admin to slot 1
+      assignSlot(myId, 1, 'Admin');
+      // create local stream (video by default)
+      await createLocalMedia('video');
+      enterRoomUI();
+    }catch(e){
+      alert('Failed to create room: ' + e.message);
+    }
+  };
+
+  // ---------- Join flow ----------
+  // Handles both join via room list and via invite link
+  async function attemptJoinRoom(roomIdOrMeta){
+    const rooms = loadRooms();
+    const meta = typeof roomIdOrMeta === 'string' ? rooms[roomIdOrMeta] : roomIdOrMeta;
+    if(!meta){ alert('Room not found'); return; }
+    // If URL contains invite=1&room=<id> and matches -> bypass password
+    const urlParams = new URLSearchParams(location.search);
+    const invite = urlParams.get('invite') === '1' && urlParams.get('room') === meta.id;
+    if(invite){
+      // auto-join via invite; create peer & connect
+      await joinRoomAsVisitor(meta, true);
+      return;
+    }
+    // otherwise ask password prompt
+    const pw = prompt('Enter 6-digit password for room:');
+    if(pw === null) return;
+    if(pw !== meta.pass){
+      alert('MAT KAR LALA');
+      return;
+    }
+    await joinRoomAsVisitor(meta, false);
+  }
+
+  // ---------- Peer & Media ----------
+  async function createPeer(){
+    return new Promise((resolve, reject) => {
+      peer = new Peer(undefined, {});
+      peer.on('open', id => { myId = id; console.log('Peer open', id); resolve(id); });
+      peer.on('error', err => { console.error('peer error', err); alert('Peer error: ' + err); reject(err); });
+      // on incoming connections (data)
+      peer.on('connection', conn => {
+        conn.on('open', () => {
+          const remote = conn.peer;
+          console.log('Data conn open from', remote);
+          if(!participants[remote]) participants[remote] = {};
+          participants[remote].conn = conn;
+          conn.on('data', d => handleData(remote, d));
+          conn.on('close', ()=> { console.log('data closed', remote); });
+        });
+      });
+      // on incoming calls (media)
+      peer.on('call', call => {
+        const remote = call.peer;
+        console.log('Incoming call from', remote);
+        // answer with local stream (if any)
+        try{
+          call.answer(localStream || null);
+        }catch(e){
+          try{ call.answer(); }catch(e2){}
+        }
+        call.on('stream', remoteStream => {
+          // assign stream to participant
+          if(!participants[remote]) participants[remote] = {};
+          participants[remote].stream = remoteStream;
+          // if no slot assigned, find first free
+          if(!participants[remote].slot) {
+            const slot = findFirstFreeSlot();
+            assignSlot(remote, slot, remote.slice(0,6));
+          }
+          refreshGrid();
+        });
+        call.on('close', ()=> {
+          // remove participant entry and free slot
+          const s = participants[remote] && participants[remote].slot;
+          if(s){ freeSlot(s); }
+          delete participants[remote];
+          refreshGrid();
+        });
+      });
+    });
+  }
+
+  async function createLocalMedia(mode){
+    try{
+      if(localStream){ localStream.getTracks().forEach(t=>t.stop()); localStream=null; }
+      if(mode === 'video'){
+        localStream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}}, audio:true});
+      } else {
+        localStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      }
+      // attach local stream to our participant entry (if assigned)
+      if(myId){
+        participants[myId] = participants[myId] || {};
+        participants[myId].stream = localStream;
+        if(!participants[myId].slot) assignSlot(myId, findFirstFreeSlot(), 'You');
+      }
+      refreshGrid();
+    }catch(e){
+      console.warn('Media failed', e);
+      alert('Camera/Mic access required to join');
+      throw e;
+    }
+  }
+
+  // visitor join: connect data to admin and call admin with local stream (if invited bypass)
+  async function joinRoomAsVisitor(meta, invited){
+    try{
+      await createPeer();
+      currentRoom = meta;
+      roomNameDisplay.textContent = meta.name;
+      // if invited, open data conn and call admin
+      adminId = meta.creator;
+      // open data conn to admin
+      const conn = peer.connect(adminId);
+      conn.on('open', async ()=> {
+        participants[adminId] = participants[adminId] || {};
+        participants[adminId].conn = conn;
+        conn.on('data', d => handleData(adminId, d));
+        // if invited -> send invited join; else request approval
+        if(invited){
+          conn.send({type:'invited-join', from: myId, name: 'Guest-'+myId.slice(0,6), preferredSlot: (meta.preferredSlot||0)});
+          // create stream and call admin immediately
+          await createLocalMedia('video');
+          const call = peer.call(adminId, localStream);
+          call.on('stream', remoteStream => {
+            participants[adminId] = participants[adminId] || {};
+            participants[adminId].stream = remoteStream;
+            if(!participants[adminId].slot) assignSlot(adminId, 1, 'Admin');
+            refreshGrid();
+          });
+        } else {
+          // request approval: create local stream first (so we can call after approval)
+          await createLocalMedia('video');
+          conn.send({type:'request-join', from: myId, name: 'Guest-'+myId.slice(0,6)});
+          alert('Join request sent to admin. Wait for approval.');
+        }
+      });
+      conn.on('error', ()=> alert('Could not connect to room admin.'));
+      // show room UI immediately (we will be added after approval)
+      enterRoomUI(false);
+    }catch(e){
+      alert('Join failed: ' + e.message);
+    }
+  }
+
+  // ---------- Data message handling ----------
+  function handleData(fromId, data){
+    if(!data || !data.type) return;
+    console.log('Data from', fromId, data);
+    switch(data.type){
+      case 'request-join':
+        // only admin handles -- add to pending list and ask admin to approve through UI
+        if(isAdmin){
+          // auto-assign first free slot on approval by admin via UI
+          // We'll create a temporary entry for pending
+          showAdminPending(fromId, data.name);
+        }
+        break;
+      case 'invited-join':
+        // admin receives invited-join notice; auto-assign if has slot available
+        if(isAdmin){
+          // accept and send approval with slot
+          const slot = findFirstFreeSlot();
+          assignSlot(fromId, slot, data.name || ('Guest-'+fromId.slice(0,6)));
+          // ensure data conn exists and send approved
+          const conn = participants[fromId] && participants[fromId].conn;
+          if(conn && conn.open) conn.send({type:'approved', slot});
+        }
+        break;
+      case 'approved':
+        // visitor receives approved from admin; then call admin with stream (if not already)
+        if(data.slot){
+          // store assigned slot locally
+          assignSlot(myId, data.slot, 'You');
+          // call admin (if not already calling)
+          const call = peer.call(data.from || adminId, localStream);
+          call.on('stream', remoteStream => {
+            // set admin stream to slot 1
+            participants[adminId] = participants[adminId] || {};
+            participants[adminId].stream = remoteStream;
+            if(!participants[adminId].slot) assignSlot(adminId, 1, 'Admin');
+            refreshGrid();
+          });
+        }
+        break;
+      case 'admin-mute':
+        // admin told target to mute themselves
+        if(data.target === myId){
+          if(localStream){
+            const a = localStream.getAudioTracks()[0];
+            if(a) a.enabled = false;
+            toggleMic.textContent = 'Muted';
+          }
+        }
+        break;
+      case 'admin-kick':
+        if(data.target === myId){
+          alert('Removed from room by admin');
+          cleanupAndLeave();
+        }
+        break;
+      case 'admin-bw':
+        // toggle bw filter on target's video element
+        if(data.target === myId){
+          // toggle CSS filter on our own video element if present
+          const slot = participants[myId] && participants[myId].slot;
+          if(slot){
+            const vid = document.getElementById('video_slot_' + slot);
+            if(vid){
+              const cur = vid.dataset.bw === '1';
+              vid.style.filter = cur ? '' : 'grayscale(100%) contrast(90%)';
+              vid.dataset.bw = cur ? '0' : '1';
+            }
+          }
+        }
+        break;
+      default:
+        console.log('Unhandled data', data);
+    }
+  }
+
+  // ---------- Slot assignment & UI ----------
+  function findFirstFreeSlot(){
+    for(let i=1;i<=SLOT_COUNT;i++){
+      if(!peerForSlot[i]) return i;
+    }
+    return 1;
+  }
+  function assignSlot(peerId, slotNum, name){
+    // free previous slot if any
+    const prev = slotForPeer[peerId];
+    if(prev) delete peerForSlot[prev];
+    slotForPeer[peerId] = slotNum;
+    peerForSlot[slotNum] = peerId;
+    participants[peerId] = participants[peerId] || {};
+    participants[peerId].slot = slotNum;
+    participants[peerId].name = name || peerId.slice(0,6);
+  }
+  function freeSlot(slotNum){
+    const pid = peerForSlot[slotNum];
+    if(pid){
+      delete slotForPeer[pid];
+      delete peerForSlot[slotNum];
+    }
+  }
+
+  // refresh grid: list occupied peers sorted by slot number and render equal-sized tiles
+  function refreshGrid(){
+    // build list of occupied participants (with stream) sorted by slot num
+    const occupied = [];
+    for(let s=1;s<=SLOT_COUNT;s++){
+      const pid = peerForSlot[s];
+      if(pid && participants[pid] && participants[pid].stream) occupied.push({slot:s, pid});
+    }
+    // fallback: include local participant (myId) if no streams yet (show local preview)
+    if(Object.keys(participants).length && myId && participants[myId] && participants[myId].stream && !occupied.find(o=>o.pid===myId)){
+      const s = slotForPeer[myId] || findFirstFreeSlot();
+      assignSlot(myId, s, 'You');
+      occupied.push({slot:s, pid:myId});
+    }
+
+    // if no occupied streams, maybe show our own preview if present
+    if(occupied.length === 0 && myId && participants[myId] && participants[myId].stream){
+      const s = slotForPeer[myId] || assignSlot(myId, findFirstFreeSlot(), 'You');
+      occupied.push({slot: slotForPeer[myId], pid: myId});
+    }
+
+    const n = occupied.length || 0;
+    // compute columns/rows to evenly distribute: use up to 4 columns
+    const cols = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(n))));
+    // better: choose columns = min(4, n) for small n for horizontal layouts
+    const columns = Math.min(4, Math.max(1, n));
+    // but to follow requested: 1->1, 2->2,3->3,4->4,5->4,6->4...
+    const computedCols = (() => {
+      if(n <= 4) return n || 1;
+      return 4;
+    })();
+    const rows = Math.ceil(Math.max(1,n) / computedCols);
+
+    // set grid template accordingly
+    gridEl.style.gridTemplateColumns = `repeat(${computedCols}, 1fr)`;
+    gridEl.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+
+    // clear grid
+    gridEl.innerHTML = '';
+    // render each occupied in order of slot ascending (to preserve fixed slot order)
+    const occSorted = occupied.sort((a,b)=> a.slot - b.slot);
+    occSorted.forEach(o => {
+      const pid = o.pid;
+      const slotNum = o.slot;
+      const part = participants[pid] || {};
+      const tile = document.createElement('div'); tile.className = 'slot';
+      tile.style.background = COLORS[slotNum] || '#111';
+      // video element
+      const vid = document.createElement('video');
+      vid.autoplay = true; vid.playsInline = true; vid.id = 'video_slot_' + slotNum;
+      vid.srcObject = part.stream || null;
+      if(pid === myId) vid.muted = true;
+      // overlay
+      const overlay = document.createElement('div'); overlay.className='slot-overlay';
+      overlay.textContent = String(slotNum).padStart(2,'0') + ' — ' + (part.name || pid.slice(0,6));
+      tile.appendChild(vid); tile.appendChild(overlay);
+      // admin slot controls if admin and not self
+      if(isAdmin){
+        const controls = document.createElement('div'); controls.className='slot-controls';
+        const mbtn = document.createElement('button'); mbtn.textContent='Mute';
+        mbtn.onclick = ()=> {
+          // send admin-mute to target
+          const conn = participants[pid] && participants[pid].conn;
+          if(conn && conn.open) conn.send({type:'admin-mute', target: pid});
+        };
+        const kickb = document.createElement('button'); kickb.textContent='Kick';
+        kickb.onclick = ()=> {
+          // send admin-kick
+          const conn = participants[pid] && participants[pid].conn;
+          if(conn && conn.open) conn.send({type:'admin-kick', target: pid});
+          // also forcibly free slot locally
+          if(peerForSlot[slotNum] === pid) freeSlot(slotNum);
+          if(participants[pid]) delete participants[pid];
+          refreshGrid();
+        };
+        const inviteb = document.createElement('button'); inviteb.textContent='Invite';
+        inviteb.onclick = async ()=> {
+          // compose invite link for this slot
+          const link = `${location.origin}${location.pathname}?room=${encodeURIComponent(currentRoom.id)}&invite=1&pos=${slotNum}`;
+          try{
+            if(navigator.share){
+              await navigator.share({ title: currentRoom.name, text: 'Join my room', url: link });
+            } else {
+              await navigator.clipboard.writeText(link);
+              alert('Invite link copied to clipboard');
+            }
+          }catch(e){ console.warn('share failed', e); await navigator.clipboard.writeText(link); alert('Invite link copied'); }
+        };
+        controls.appendChild(mbtn); controls.appendChild(inviteb); controls.appendChild(kickb);
+        tile.appendChild(controls);
+      }
+      gridEl.appendChild(tile);
+    });
+
+    // if there are fewer active than slots, still keep top-left brandName visible by having padding; done via CSS top-pad
+  }
+
+  // Enter room UI (show room view)
+  function enterRoomUI(showBrand=true){
+    landing.style.display = 'none';
+    roomView.style.display = 'block';
+    brandName.style.display = 'block';
+    roomNameDisplay.textContent = currentRoom ? currentRoom.name : '—';
+    refreshGrid();
+    // mark room active timestamp
+    if(currentRoom) { currentRoom.lastActive = Date.now(); addOrUpdateRoom(currentRoom); }
+  }
+
+  // ---------- Admin pending UI ----------
+  function showAdminPending(peerId, name){
+    // prompt admin to accept/reject
+    if(!isAdmin) return;
+    const accept = confirm(`Join request from ${name || peerId.slice(0,6)} — Allow?`);
+    const conn = participants[peerId] && participants[peerId].conn;
+    if(accept){
+      const slot = findFirstFreeSlot();
+      assignSlot(peerId, slot, name);
+      if(conn && conn.open) conn.send({type:'approved', slot, from: myId});
+      refreshGrid();
+    } else {
+      if(conn && conn.open) conn.send({type:'rejected'});
+    }
+  }
+
+  // ---------- Cleanup & Leave ----------
+  function cleanupAndLeave(){
+    // close media & peer
+    try{ if(localStream) localStream.getTracks().forEach(t=>t.stop()); }catch(e){}
+    try{ if(peer) peer.destroy(); }catch(e){}
+    // free slots etc.
+    for(let s=1;s<=SLOT_COUNT;s++) if(peerForSlot[s]) delete peerForSlot[s];
+    for(const pid in participants) delete participants[pid];
+    for(const k in slotForPeer) delete slotForPeer[k];
+    // go back to landing
+    roomView.style.display = 'none';
+    landing.style.display = 'flex';
+    // optionally keep room metadata in storage (lastActive updated)
+  }
+
+  // ---------- Controls ----------
+  toggleCam.onclick = async ()=> {
+    if(!localStream){ alert('No camera stream'); return; }
+    const v = localStream.getVideoTracks()[0];
+    if(!v){ alert('No video track'); return; }
+    v.enabled = !v.enabled;
+    toggleCam.textContent = v.enabled ? 'Camera Off' : 'Camera On';
+    // broadcast our mode change via data conns if needed (not implemented further)
+  };
+  toggleMic.onclick = ()=> {
+    if(!localStream){ alert('No mic'); return; }
+    const a = localStream.getAudioTracks()[0];
+    if(!a){ alert('No audio track'); return; }
+    a.enabled = !a.enabled;
+    toggleMic.textContent = a.enabled ? 'Mute' : 'Unmute';
+  };
+  switchMode.onclick = async ()=> {
+    // switch between video and voice by recreating localStream
+    if(!localStream){ alert('No local stream'); return; }
+    // check if video exists
+    const hasVideo = localStream.getVideoTracks().length > 0;
+    try{
+      // stop current tracks
+      localStream.getTracks().forEach(t=>t.stop());
+      if(hasVideo){
+        localStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      } else {
+        localStream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}}, audio:true});
+      }
+      // update our participant entry and re-call admin or broadcast (not full SFU here)
+      participants[myId] = participants[myId] || {};
+      participants[myId].stream = localStream;
+      refreshGrid();
+      // For active peer connections, replacing tracks is more complex: in real app replaceTrack on RTCPeerConnection
+      alert('Mode switched (demo). For full seamless switching use advanced RTCPeerConnection replaceTrack.');
+    }catch(e){
+      console.warn('switch failed', e);
+      alert('Cannot switch mode: ' + e.message);
+    }
+  };
+  leaveRoomBtn.onclick = ()=> {
+    if(confirm('Leave room?')) cleanupAndLeave();
+  };
+  shareBtn.onclick = async ()=> {
+    if(!currentRoom){ alert('No room to share'); return; }
+    const link = `${location.origin}${location.pathname}?room=${encodeURIComponent(currentRoom.id)}&invite=1`;
+    try{
+      if(navigator.share){
+        await navigator.share({ title: currentRoom.name, text: 'Join my room', url: link });
+      } else {
+        await navigator.clipboard.writeText(link);
+        alert('Invite link copied to clipboard');
+      }
+    }catch(e){
+      console.warn('share failed', e);
+      await navigator.clipboard.writeText(link);
+      alert('Invite link copied to clipboard');
+    }
+  };
+
+  // ---------- Utility: auto-join from URL if invite param present ----------
+  (async function autoJoinFromUrl(){
+    const params = new URLSearchParams(location.search);
+    const roomParam = params.get('room');
+    if(roomParam){
+      // attempt to lookup metadata in localStorage; if present and invite=1 -> auto join
+      const rooms = loadRooms();
+      const meta = rooms[roomParam];
+      // If meta not found, still allow visitor to attempt joining via invite link (they can join; admin must exist)
+      const invited = params.get('invite') === '1';
+      // show landing and try auto-join (simulate click Join)
+      joinArea.style.display = 'block';
+      // attempt immediate join if invite
+      if(invited && meta){
+        // directly call join flow
+        await joinRoomAsVisitor(meta, true);
+      }
+      // If invited but meta missing, we still try to create Peer and connect to admin when they appear.
+    }
+  })();
+
+  // ---------- On page load: show brand and landing ----------
+  (function init(){
+    // ensure top-left doesn't overlap visually: CSS top-pad reserved
+    // Load rooms and clean expired
+    loadRooms();
+  })();
+
+  // Expose for debugging
+  window._CleanCall = {
+    loadRooms, addOrUpdateRoom, removeRoom, participants
+  };
+
+})();
+</script>
+</body>
+</html>
