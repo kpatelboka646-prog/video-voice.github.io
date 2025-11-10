@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CleanCall — 12 Grid (BHARAT KUMAR PATEL)</title>
+<!--
+Single-file static demo:
+- PeerJS for signalling (CDN)
+- 12 fixed positions (4 top, 4 mid, 4 bottom)
+- Top-left: "BHARAT KUMAR PATEL"
+- Center: Create Room / Join Existing Room (outlined, transparent bg)
+- Admin controls: approve join requests, invite to fixed slot, mute/block/kick
+- Chat via data channels, stored in localStorage up to 12 hours
+-->
+<style>
+  /* ---------- Theme: absolute minimal, white background ---------- */
+  :root{
+    --bg:#ffffff;
+    --fg:#0b0b0b;
+    --muted:#666666;
+    --border:#dcdcdc;
+    --name-font:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Arial;
+    --slot-gap:12px;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:var(--name-font);-webkit-font-smoothing:antialiased}
+  /* Top-left name only */
+  .top-left{
+    position:fixed; left:18px; top:18px; z-index:50;
+    font-weight:700; font-size:18px; letter-spacing:0.2px;
+  }
+
+  /* Center main area with two outline buttons */
+  .center-ui{
+    position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center; gap:18px;
+  }
+  .btns{display:flex; gap:14px; align-items:center}
+  button.btn{
+    padding:12px 18px; border-radius:10px; font-weight:700; font-size:15px;
+    background:transparent; border:2px solid var(--fg); color:var(--fg); cursor:pointer;
+    transition:transform .12s ease,opacity .12s ease;
+  }
+  button.btn:active{transform:translateY(1px)}
+  /* No bg, only outline as requested */
+  input.join-input{padding:10px 12px;border-radius:10px;border:1px solid var(--border);min-width:320px}
+
+  /* Fullscreen room view (hidden initially) */
+  .room{
+    display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:40;
+    background:var(--bg);
+    padding:18px;
+    box-sizing:border-box;
+  }
+
+  /* 3 rows x 4 cols grid — each slot fixed visually (no scrolling) */
+  .grid{
+    width:100%; height:calc(100% - 140px); /* leave space for controls bottom */
+    display:grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: var(--slot-gap);
+    align-items:stretch;
+    justify-items:stretch;
+  }
+
+  /* Each slot: rectangle look */
+  .slot{
+    position:relative;
+    border-radius:10px;
+    overflow:hidden;
+    background:#000; /* video will fill */
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+  video.slot-video{ width:100%; height:100%; object-fit:cover; display:block; }
+
+  /* overlay on top-left of each slot to show position number and name & controls (minimal) */
+  .slot-overlay{
+    position:absolute; left:8px; top:8px; z-index:8; display:flex; gap:8px; align-items:center;
+    backdrop-filter: none;
+  }
+  .badge{
+    min-width:36px; height:36px; border-radius:6px; display:flex;align-items:center;justify-content:center;
+    color:#fff; font-weight:700; font-size:12px; box-shadow:0 6px 18px rgba(0,0,0,0.12);
+  }
+  .who{ font-size:13px; color:#fff; font-weight:700; text-shadow:0 2px 6px rgba(0,0,0,0.45) }
+
+  /* admin controls for a slot (mute/kick/invite/black-white) */
+  .slot-controls {
+    position:absolute; right:8px; top:8px; z-index:9; display:flex; gap:8px; opacity:0.95;
+  }
+  .slot-controls button{ background:rgba(255,255,255,0.85); border-radius:8px; border:1px solid var(--border); padding:6px 8px; font-size:12px; cursor:pointer; }
+
+  /* bottom control bar */
+  .controls-bar{
+    height:120px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px;
+  }
+  .controls-left{ display:flex; gap:10px; align-items:center; }
+  .controls-right{ display:flex; gap:10px; align-items:center; }
+
+  .control-small{ padding:10px 12px; border-radius:8px; border:1px solid var(--border); background:transparent; cursor:pointer; }
+
+  /* chat minimal panel (bottom-left) */
+  .chat{
+    position:fixed; left:18px; bottom:18px; width:320px; max-height:360px; display:flex; flex-direction:column; gap:8px; z-index:60;
+    background:rgba(255,255,255,0.96); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.06); padding:10px; border:1px solid var(--border);
+  }
+  .chat-list{ flex:1; overflow:auto; display:flex; flex-direction:column; gap:6px; padding-right:6px; }
+  .msg{ padding:8px 10px; border-radius:8px; font-size:13px; max-width:86%; word-wrap:break-word; }
+  .msg.me{ align-self:flex-end; background:#e9f5ff; color:#000; }
+  .msg.other{ align-self:flex-start; background:#f2f2f2; color:#000; }
+  .chat-send{ display:flex; gap:8px; align-items:center; }
+  .chat-send input{ flex:1; padding:8px 10px; border-radius:8px; border:1px solid var(--border); }
+
+  /* pending join list for admin (top-right) */
+  .pending{
+    position:fixed; right:18px; top:18px; z-index:70; background:rgba(255,255,255,0.98); padding:10px; border-radius:8px; border:1px solid var(--border);
+    box-shadow:0 10px 30px rgba(0,0,0,0.06);
+  }
+  .pending-item{ display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+
+  /* small responsive adjustments */
+  @media (max-width:900px){
+    .chat{ display:none; } /* hide chat on small screens for this demo */
+    .pending{ right:8px; top:60px; }
+  }
+</style>
+</head>
+<body>
+  <!-- Top-left name only -->
+  <div class="top-left">BHARAT KUMAR PATEL</div>
+
+  <!-- Center first screen -->
+  <div class="center-ui" id="landing">
+    <div class="btns">
+      <button id="createRoomBtn" class="btn">Create Room</button>
+      <button id="joinRoomBtn" class="btn">Join Existing Room</button>
+    </div>
+    <div id="joinArea" style="display:none">
+      <input id="joinInput" class="join-input" placeholder="Paste room link or room id (invite links bypass approval)" />
+      <div style="height:8px"></div>
+      <div class="btns"><button id="joinNow" class="btn">Join</button></div>
+    </div>
+  </div>
+
+  <!-- Room view (fullscreen). Hidden by default -->
+  <div class="room" id="roomView" aria-hidden="true">
+    <!-- 12 fixed slots (01..12) -->
+    <div class="grid" id="grid">
+      <!-- We'll create 12 slots with fixed IDs slot01..slot12 -->
+      <!-- Each slot contains a video.tag and overlays -->
+      <!-- Colors mapped to badges (user index color) -->
+      <div class="slot" id="slot01" data-pos="1"><video class="slot-video" id="video01" autoplay playsinline muted></video>
+        <div class="slot-overlay"><div class="badge" id="badge01"></div><div class="who" id="who01"></div></div>
+        <div class="slot-controls" id="controls01" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot02" data-pos="2"><video class="slot-video" id="video02" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge02"></div><div class="who" id="who02"></div></div>
+        <div class="slot-controls" id="controls02" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot03" data-pos="3"><video class="slot-video" id="video03" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge03"></div><div class="who" id="who03"></div></div>
+        <div class="slot-controls" id="controls03" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot04" data-pos="4"><video class="slot-video" id="video04" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge04"></div><div class="who" id="who04"></div></div>
+        <div class="slot-controls" id="controls04" style="display:none"></div>
+      </div>
+
+      <div class="slot" id="slot05" data-pos="5"><video class="slot-video" id="video05" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge05"></div><div class="who" id="who05"></div></div>
+        <div class="slot-controls" id="controls05" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot06" data-pos="6"><video class="slot-video" id="video06" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge06"></div><div class="who" id="who06"></div></div>
+        <div class="slot-controls" id="controls06" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot07" data-pos="7"><video class="slot-video" id="video07" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge07"></div><div class="who" id="who07"></div></div>
+        <div class="slot-controls" id="controls07" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot08" data-pos="8"><video class="slot-video" id="video08" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge08"></div><div class="who" id="who08"></div></div>
+        <div class="slot-controls" id="controls08" style="display:none"></div>
+      </div>
+
+      <div class="slot" id="slot09" data-pos="9"><video class="slot-video" id="video09" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge09"></div><div class="who" id="who09"></div></div>
+        <div class="slot-controls" id="controls09" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot10" data-pos="10"><video class="slot-video" id="video10" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge10"></div><div class="who" id="who10"></div></div>
+        <div class="slot-controls" id="controls10" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot11" data-pos="11"><video class="slot-video" id="video11" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge11"></div><div class="who" id="who11"></div></div>
+        <div class="slot-controls" id="controls11" style="display:none"></div>
+      </div>
+      <div class="slot" id="slot12" data-pos="12"><video class="slot-video" id="video12" autoplay playsinline></video>
+        <div class="slot-overlay"><div class="badge" id="badge12"></div><div class="who" id="who12"></div></div>
+        <div class="slot-controls" id="controls12" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Controls bar bottom -->
+    <div class="controls-bar">
+      <div class="controls-left">
+        <button id="toggleMyCam" class="control-small">Toggle Camera</button>
+        <button id="toggleMyMic" class="control-small">Toggle Mic</button>
+        <button id="switchMode" class="control-small">Switch Video/Voice</button>
+        <button id="leaveBtn" class="control-small">Leave</button>
+      </div>
+      <div class="controls-right">
+        <div id="roomInfo" style="font-size:13px;color:var(--muted)">Room: <span id="roomIdDisplay">—</span></div>
+        <button id="copyLink" class="control-small">Copy Link</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat -->
+  <div class="chat" id="chat" style="display:none">
+    <div style="font-weight:700">Chat</div>
+    <div class="chat-list" id="chatList"></div>
+    <div class="chat-send">
+      <input id="chatInput" placeholder="Type message..." />
+      <button id="sendBtn" class="control-small">Send</button>
+    </div>
+  </div>
+
+  <!-- Pending join panel for admin -->
+  <div class="pending" id="pendingPanel" style="display:none">
+    <div style="font-weight:700;margin-bottom:6px">Pending Requests</div>
+    <div id="pendingList"></div>
+  </div>
+
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+/* ============================
+  CleanCall 12-grid single-file
+  - PeerJS used for signalling (demo PeerServer)
+  - Admin = creator. Creator sits at slot01 by default.
+  - Invitations: invite link includes ?room=<id>&pos=<slot>&invite=1
+  - If not invited, visitor sends DATA 'request-join' -> admin sees pending and approves.
+  - Admin can approve specifying which slot to place the user (1..12).
+  - Admin can mute/force-kick users via DATA messages to target peers.
+  - Chat via data connections broadcasted to everyone in room.
+  - Chat persisted in localStorage for 12 hours (auto-purge).
+  Note: This is a frontend-only demo. Works best on localhost / https with TURN in production.
+  ============================ */
+
+(() => {
+  // --------- Config & Colors (user-specified palette) ----------
+  const SLOT_COUNT = 12;
+  const SLOT_COLORS = {
+    1: '#2d00f7ff',
+    2: '#6a00f4ff',
+    3: '#8900f2ff',
+    4: '#a100f2ff',
+    5: '#b100e8ff',
+    6: '#bc00ddff',
+    7: '#d100d1ff',
+    8: '#db00b6ff',
+    9: '#e500a4ff',
+    10:'#f20089ff',
+    11:'#ff0a54',
+    12:'#ff477e'
+  };
+
+  // --------- DOM refs ----------
+  const landing = document.getElementById('landing');
+  const createRoomBtn = document.getElementById('createRoomBtn');
+  const joinRoomBtn = document.getElementById('joinRoomBtn');
+  const joinArea = document.getElementById('joinArea');
+  const joinInput = document.getElementById('joinInput');
+  const joinNow = document.getElementById('joinNow');
+
+  const roomView = document.getElementById('roomView');
+  const roomIdDisplay = document.getElementById('roomIdDisplay');
+  const copyLinkBtn = document.getElementById('copyLink');
+  const leaveBtn = document.getElementById('leaveBtn');
+  const toggleMyCam = document.getElementById('toggleMyCam');
+  const toggleMyMic = document.getElementById('toggleMyMic');
+  const switchModeBtn = document.getElementById('switchMode');
+
+  const chatEl = document.getElementById('chat');
+  const chatList = document.getElementById('chatList');
+  const chatInput = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('sendBtn');
+
+  const pendingPanel = document.getElementById('pendingPanel');
+  const pendingList = document.getElementById('pendingList');
+
+  // slot elements map
+  const slots = Array.from({length: SLOT_COUNT}, (_,i)=> i+1).reduce((acc,n)=>{
+    acc[n] = {
+      slotEl: document.getElementById('slot' + String(n).padStart(2,'0')),
+      videoEl: document.getElementById('video' + String(n).padStart(2,'0')),
+      badgeEl: document.getElementById('badge' + String(n).padStart(2,'0')),
+      whoEl: document.getElementById('who' + String(n).padStart(2,'0')),
+      controlsEl: document.getElementById('controls' + String(n).padStart(2,'0'))
+    };
+    return acc;
+  }, {});
+
+  // apply slot colors and initial labels
+  for(let i=1;i<=SLOT_COUNT;i++){
+    slots[i].badgeEl.style.background = SLOT_COLORS[i] || '#444';
+    slots[i].badgeEl.textContent = String(i).padStart(2,'0');
+    slots[i].whoEl.textContent = ''; // empty initially
+  }
+
+  // ------- State -------
+  let peer = null;
+  let localStream = null;
+  let localMode = 'video'; // 'video' or 'voice'
+  let myId = null;
+  let isAdmin = false;
+  let adminId = null; // host id
+  // mapping: peerId -> {slot, name, stream, conn(data)}
+  const participants = {};
+  // which slot is occupied => peerId
+  const slotOccupancy = {}; // slot => peerId
+  // pending requests {peerId: {name, info}}
+  const pendingRequests = {};
+
+  // Chat persistence (localStorage key)
+  const CHAT_KEY = 'cleancall_chat_v1';
+  const CHAT_RETENTION_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+  // simple helper: show landing vs room
+  function showRoom(flag){
+    landing.style.display = flag ? 'none' : 'flex';
+    roomView.style.display = flag ? 'block' : 'none';
+    chatEl.style.display = flag ? 'flex' : 'none';
+    pendingPanel.style.display = (flag && isAdmin) ? 'block' : 'none';
+  }
+
+  // ---------- Utilities ----------
+  function log(msg){ console.log('[CleanCall]', msg); }
+  function setRoomId(id){ roomIdDisplay.textContent = id || '—'; }
+
+  // Broadcast data message to all connected data connections
+  function broadcastData(obj){
+    for(const pid in participants){
+      const p = participants[pid];
+      if(p && p.conn && p.conn.open){
+        try{ p.conn.send({type:'broadcast', payload: obj}); }catch(e){}
+      }
+    }
+  }
+
+  // Send direct data to specific peer
+  function sendToPeer(peerId, obj){
+    const p = participants[peerId];
+    if(p && p.conn && p.conn.open){
+      try{ p.conn.send(obj); }catch(e){}
+    } else {
+      console.warn('No open data conn to', peerId);
+    }
+  }
+
+  // assign a peerId to a specific slot (admin decision)
+  function assignSlotToPeer(peerId, slotNum, displayName){
+    if(slotNum < 1 || slotNum > SLOT_COUNT) return false;
+    // free previous if any
+    for(const s in slotOccupancy){
+      if(slotOccupancy[s] === peerId) delete slotOccupancy[s];
+    }
+    // if target slot occupied, ask admin to choose different slot or override
+    if(slotOccupancy[slotNum]){
+      // we will override: kick occupant
+      const old = slotOccupancy[slotNum];
+      sendToPeer(old, {type:'kick', reason:'overridden-by-admin'});
+      delete participants[old];
+    }
+    slotOccupancy[slotNum] = peerId;
+    if(!participants[peerId]) participants[peerId] = {};
+    participants[peerId].slot = slotNum;
+    if(displayName) participants[peerId].name = displayName;
+    updateSlotUI(slotNum);
+    return true;
+  }
+
+  // clear slot UI
+  function clearSlot(slotNum){
+    const s = slots[slotNum];
+    s.whoEl.textContent = '';
+    s.videoEl.srcObject = null;
+    s.controlsEl.style.display = 'none';
+  }
+
+  // Update a single slot UI based on participants mapping
+  function updateSlotUI(slotNum){
+    const s = slots[slotNum];
+    const pid = slotOccupancy[slotNum];
+    if(!pid){ // empty
+      s.whoEl.textContent = '';
+      s.videoEl.srcObject = null;
+      s.controlsEl.style.display = 'none';
+      return;
+    }
+    const p = participants[pid];
+    s.whoEl.textContent = p && p.name ? p.name : (pid === myId ? 'You' : pid.slice(0,6));
+    if(p && p.stream){
+      try{ s.videoEl.srcObject = p.stream; }
+      catch(e){ console.warn('set srcObject failed', e); }
+    }
+    // if admin, show controls on each slot (mute/kick/black-white/invite)
+    if(isAdmin){
+      s.controlsEl.style.display = 'flex';
+      s.controlsEl.innerHTML = '';
+      // Mute toggle
+      const muteBtn = document.createElement('button'); muteBtn.textContent = 'Mute';
+      muteBtn.onclick = () => { sendToPeer(pid, {type:'admin-mute'}); };
+      // Block (black & white effect)
+      const bwBtn = document.createElement('button'); bwBtn.textContent = 'B/W';
+      bwBtn.onclick = () => { sendToPeer(pid, {type:'admin-bw-toggle'}); };
+      // Kick
+      const kickBtn = document.createElement('button'); kickBtn.textContent = 'Kick';
+      kickBtn.onclick = () => { sendToPeer(pid, {type:'kick', reason:'removed-by-admin'}); };
+      // Invite (generate link with pos param)
+      const inviteBtn = document.createElement('button'); inviteBtn.textContent = 'Invite';
+      inviteBtn.onclick = () => { 
+        const link = `${location.origin}${location.pathname}?room=${encodeURIComponent(myId)}&pos=${slotNum}&invite=1`;
+        navigator.clipboard.writeText(link).then(()=> alert('Invite link copied to clipboard'));
+      };
+      s.controlsEl.appendChild(muteBtn); s.controlsEl.appendChild(bwBtn); s.controlsEl.appendChild(inviteBtn); s.controlsEl.appendChild(kickBtn);
+    } else {
+      s.controlsEl.style.display = 'none';
+    }
+  }
+
+  // map existing participants into slots on UI refresh
+  function refreshAllSlots(){
+    for(let i=1;i<=SLOT_COUNT;i++){
+      updateSlotUI(i);
+    }
+  }
+
+  // add chat message to UI and persist
+  function addChatMessage({fromId, fromName, text, ts}){
+    const now = ts || Date.now();
+    const me = fromId === myId;
+    const div = document.createElement('div');
+    div.className = 'msg ' + (me ? 'me' : 'other');
+    div.innerHTML = `<div style="font-weight:700;font-size:12px;margin-bottom:4px">${ me ? 'You' : (fromName || fromId.slice(0,6)) }</div>
+                     <div>${escapeHtml(text)}</div>
+                     <div style="font-size:11px;color:#999;margin-top:6px">${new Date(now).toLocaleTimeString()}</div>`;
+    chatList.appendChild(div);
+    chatList.scrollTop = chatList.scrollHeight;
+    // persist
+    persistChat({fromId, fromName, text, ts:now});
+  }
+
+  // persist chat to localStorage and purge older than 12 hours
+  function persistChat(item){
+    const arr = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]');
+    arr.push(item);
+    const cutoff = Date.now() - CHAT_RETENTION_MS;
+    const filtered = arr.filter(m => (m.ts || 0) >= cutoff);
+    localStorage.setItem(CHAT_KEY, JSON.stringify(filtered));
+  }
+
+  // load chat from storage and show
+  function loadChat(){
+    chatList.innerHTML = '';
+    const arr = JSON.parse(localStorage.getItem(CHAT_KEY) || '[]');
+    const cutoff = Date.now() - CHAT_RETENTION_MS;
+    const filtered = arr.filter(m => (m.ts || 0) >= cutoff);
+    localStorage.setItem(CHAT_KEY, JSON.stringify(filtered));
+    filtered.forEach(m => addChatMessage(m));
+  }
+
+  // helper escape
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // ---------- Peer & Signalling logic ----------
+  // We'll use PeerJS where each peer has an id.
+  // Flow:
+  // - Creator: create peer -> becomes admin, occupies slot 1.
+  // - When a visitor wants to join:
+  //     * If visitor has invite param (invite=1 & room=<adminId> & pos=X): then auto create data conn to admin and admin will accept automatically (bypass pending).
+  //     * Otherwise, visitor will open data conn to admin and send {type:'request-join', name, info}. Admin will see pending and can Approve -> admin will reply {type:'approved', slot: N} -> visitor then calls admin with media or waits for admin to call them.
+  // - For simplicity we make visitors call admin (admin receives calls and answers).
+  //
+  // Note: PeerJS data connections are used for admin messaging & chat.
+
+  // create peer (for both admin and visitor)
+  function createPeer(){
+    return new Promise((resolve, reject) => {
+      peer = new Peer(undefined, {}); // use default PeerServer (demo)
+      peer.on('open', id => {
+        myId = id;
+        log('Peer open: ' + id);
+        resolve(id);
+      });
+      peer.on('error', err => {
+        console.error('Peer error', err);
+        alert('Peer error: ' + (err && err.message));
+        reject(err);
+      });
+
+      // handle incoming data connections
+      peer.on('connection', conn => {
+        conn.on('open', () => {
+          const remoteId = conn.peer;
+          // store data conn
+          if(!participants[remoteId]) participants[remoteId] = {};
+          participants[remoteId].conn = conn;
+          conn.on('data', d => handleDataMessage(remoteId, d));
+          conn.on('close', () => {
+            log('data conn closed from ' + remoteId);
+          });
+        });
+      });
+
+      // handle incoming media calls
+      peer.on('call', call => {
+        const remoteId = call.peer;
+        log('Incoming call from ' + remoteId);
+        // admin answers; visitor typically receives remote stream event on their call
+        const answer = () => {
+          const stream = localStream || null;
+          try{ call.answer(stream); } catch(e){ console.warn('answer failed', e); call.answer(); }
+          // attach remote stream when provided
+          call.on('stream', remoteStream => {
+            // place remote stream in assigned slot if known
+            if(!participants[remoteId]) participants[remoteId] = {};
+            participants[remoteId].stream = remoteStream;
+            // if slot is assigned, update UI; otherwise, find first free slot
+            const assignedSlot = participants[remoteId].slot || findFirstFreeSlot();
+            if(!participants[remoteId].slot) assignSlotToPeer(remoteId, assignedSlot, participants[remoteId].name || remoteId.slice(0,6));
+            updateSlotUI(participants[remoteId].slot);
+          });
+          call.on('close', ()=> {
+            // free slot
+            const s = participants[remoteId] && participants[remoteId].slot;
+            if(s){ delete slotOccupancy[s]; updateSlotUI(s); }
+            delete participants[remoteId];
+          });
+        };
+        // if admin: always answer (admin must be ready)
+        if(isAdmin){
+          answer();
+        } else {
+          // If not admin and someone calls us (unlikely in current flow), answer with our stream
+          answer();
+        }
+      });
+    });
+  }
+
+  // find first free slot from 1..12
+  function findFirstFreeSlot(){
+    for(let i=1;i<=SLOT_COUNT;i++){
+      if(!slotOccupancy[i]) return i;
+    }
+    return 1; // fallback
+  }
+
+  // handle incoming data messages from peer
+  function handleDataMessage(fromId, data){
+    if(!data || !data.type) return;
+    log('DATA from', fromId, data);
+    switch(data.type){
+      case 'request-join':
+        // visitor is requesting join; show pending to admin
+        if(isAdmin){
+          pendingRequests[fromId] = {name: data.name || fromId.slice(0,6), info: data.info || {}};
+          renderPending();
+        } else {
+          // ignore
+        }
+        break;
+      case 'approved':
+        // admin approval: {slot}
+        if(data.slot){
+          // visitor now knows which slot to occupy; call admin with media
+          participants[adminId] = participants[adminId] || {};
+          participants[adminId].conn = participants[adminId].conn || null; // maybe present
+          // call admin
+          callAdminWithStream();
+          // inform local map of assigned slot (admin will map remote)
+          // store name who approved?
+        }
+        break;
+      case 'broadcast':
+        // treat as chat or system broadcast
+        const payload = data.payload || {};
+        if(payload.type === 'chat'){
+          addChatMessage({fromId: fromId, fromName: payload.name, text: payload.text, ts: payload.ts});
+        }
+        break;
+      case 'admin-mute':
+        // admin requests this peer to mute self
+        if(myId === fromId) return;
+        // This arrives on target peer as data from admin, handle below
+        break;
+      case 'admin-bw-toggle':
+        // toggle black-white effect for their video (we'll toggle css filter)
+        if(myId === fromId) return;
+        break;
+      case 'kick':
+        // forced leave
+        if(data.reason){
+          alert('You have been removed from the room: ' + (data.reason||'by admin'));
+          cleanupAndLeave();
+        } else cleanupAndLeave();
+        break;
+      case 'invite':
+        // payload: {pos, name, roomId}
+        // ignore for now in visitor
+        break;
+      default:
+        // custom handlers: if data.fromAdminActions?
+        if(data.action === 'admin-mute' && data.target === myId){
+          // admin asked someone else via broadcast to mute? Do nothing unless target === me
+        }
+    }
+  }
+
+  // render pending list for admin
+  function renderPending(){
+    pendingList.innerHTML = '';
+    for(const pid in pendingRequests){
+      const item = pendingRequests[pid];
+      const div = document.createElement('div'); div.className='pending-item';
+      div.innerHTML = `<div style="font-weight:700">${escapeHtml(item.name)}</div>`;
+      const allow = document.createElement('button'); allow.textContent='Allow';
+      const reject = document.createElement('button'); reject.textContent='Reject';
+      allow.onclick = () => {
+        // admin approves and chooses a slot (first free)
+        const slot = findFirstFreeSlot();
+        assignSlotToPeer(pid, slot, item.name);
+        // ensure we have data conn; if not, create and then send approved
+        const conn = participants[pid] && participants[pid].conn;
+        if(conn && conn.open){
+          conn.send({type:'approved', slot});
+        } else {
+          // try to connect data channel and then send approved
+          const newConn = peer.connect(pid);
+          newConn.on('open', ()=>{ participants[pid] = participants[pid] || {}; participants[pid].conn = newConn; newConn.send({type:'approved', slot}); });
+          newConn.on('data', d=> handleDataMessage(pid, d));
+        }
+        delete pendingRequests[pid];
+        renderPending();
+      };
+      reject.onclick = () => {
+        // notify and remove
+        const conn = participants[pid] && participants[pid].conn;
+        if(conn && conn.open) conn.send({type:'rejected'});
+        delete pendingRequests[pid];
+        renderPending();
+      };
+      div.appendChild(allow); div.appendChild(reject);
+      pendingList.appendChild(div);
+    }
+    pendingPanel.style.display = Object.keys(pendingRequests).length ? 'block' : 'none';
+  }
+
+  // visitor flow: request join (unless invited)
+  function visitorRequestJoin(adminIdRef, name){
+    adminId = adminIdRef;
+    // open data conn to admin
+    const conn = peer.connect(adminId);
+    conn.on('open', () => {
+      participants[adminId] = participants[adminId] || {};
+      participants[adminId].conn = conn;
+      conn.on('data', d => handleDataMessage(adminId, d));
+      // send request
+      conn.send({type:'request-join', name: name || 'Guest-' + myId.slice(0,6), info: {from: location.href}});
+    });
+    conn.on('error', e => { console.warn('conn error', e); alert('Could not connect to admin for approval'); });
+  }
+
+  // admin flow: accept invited auto-join param
+  function handleInviteAutoJoin(params){
+    const invite = params.get('invite');
+    const room = params.get('room');
+    const pos = parseInt(params.get('pos')||'0',10);
+    if(invite === '1' && room){
+      // visitor directly connect to admin's data conn and create media call after informing admin
+      adminId = room;
+      // pre-create data conn and send a small 'invited-join' message including desired slot
+      const conn = peer.connect(adminId);
+      conn.on('open', () => {
+        participants[adminId] = participants[adminId] || {};
+        participants[adminId].conn = conn;
+        conn.on('data', d => handleDataMessage(adminId, d));
+        conn.send({type:'invited-join', name: 'Guest-' + myId.slice(0,6), pos: pos || 0});
+        // after sending invite notice, call admin right away with stream
+        callAdminWithStream();
+      });
+      conn.on('error', e => { console.warn('conn error', e); alert('Invite connection failed'); });
+    }
+  }
+
+  // call admin with local stream (visitor)
+  function callAdminWithStream(){
+    if(!adminId) { alert('No admin specified'); return; }
+    const call = peer.call(adminId, localStream);
+    call.on('stream', remoteStream => {
+      // admin's stream (likely admin's video)
+      // For visitor, we can place admin's stream into assigned slot (admin likely slot 1)
+      participants[adminId] = participants[adminId] || {};
+      participants[adminId].stream = remoteStream;
+      if(!participants[adminId].slot) assignSlotToPeer(adminId, 1, 'Admin');
+      updateSlotUI(participants[adminId].slot);
+    });
+    call.on('close', ()=>{ /*...*/ });
+  }
+
+  // create media stream (local) according to mode
+  async function createLocalStream(mode){
+    try{
+      if(mode === 'video'){
+        const s = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}}, audio:true});
+        localStream = s;
+      } else {
+        const s = await navigator.mediaDevices.getUserMedia({audio:true});
+        localStream = s;
+      }
+      // show local stream in our own assigned slot if present
+      if(myId && participants[myId] && participants[myId].slot){
+        participants[myId].stream = localStream;
+        updateSlotUI(participants[myId].slot);
+      } else {
+        // if no slot yet, assign first free (for admin on create)
+        const first = findFirstFreeSlot();
+        assignSlotToPeer(myId, first, 'You');
+        participants[myId].stream = localStream;
+        updateSlotUI(first);
+      }
+    }catch(e){
+      console.warn('getUserMedia failed', e);
+      alert('Camera/Mic access denied or failed. Allow device permissions.');
+      localStream = null;
+    }
+  }
+
+  // copy link to clipboard
+  copyLinkBtn.onclick = () => {
+    if(!myId) return;
+    const link = `${location.origin}${location.pathname}?room=${encodeURIComponent(myId)}`;
+    navigator.clipboard.writeText(link).then(()=> alert('Room link copied to clipboard'));
+  };
+
+  // leave cleanup
+  function cleanupAndLeave(){
+    // close all calls and data connections
+    try{ peer && peer.destroy(); }catch(e){}
+    // free slot occupancy
+    for(const s in slotOccupancy) delete slotOccupancy[s];
+    for(let i=1;i<=SLOT_COUNT;i++) clearSlot(i);
+    // reset state
+    localStream && localStream.getTracks().forEach(t=>t.stop());
+    localStream = null;
+    participants = {}; // not strict but ok for demo
+    showRoom(false);
+    location.search = ''; // optionally clear url params
+    window.location.reload();
+  }
+
+  // Toggle camera
+  toggleMyCam.onclick = () => {
+    if(localStream){
+      const v = localStream.getVideoTracks()[0];
+      if(v) { v.enabled = !v.enabled; toggleMyCam.textContent = v.enabled ? 'Toggle Camera' : 'Camera Off'; }
+    } else alert('No camera stream active');
+  };
+  // Toggle mic
+  toggleMyMic.onclick = () => {
+    if(localStream){
+      const a = localStream.getAudioTracks()[0];
+      if(a) { a.enabled = !a.enabled; toggleMyMic.textContent = a.enabled ? 'Toggle Mic' : 'Mic Off'; }
+    } else alert('No mic stream active');
+  };
+
+  // switch mode video <-> voice
+  switchModeBtn.onclick = async () => {
+    localMode = (localMode === 'video') ? 'voice' : 'video';
+    // stop old tracks
+    if(localStream){ localStream.getTracks().forEach(t=>t.stop()); localStream = null; }
+    await createLocalStream(localMode);
+    // inform others about mode change via broadcast
+    broadcastData({type:'mode-changed', from: myId, mode: localMode});
+  };
+
+  // send chat
+  sendBtn.onclick = () => {
+    const text = chatInput.value.trim();
+    if(!text) return;
+    const payload = {type:'chat', name: 'You', text, ts: Date.now()};
+    addChatMessage({fromId: myId, fromName: 'You', text, ts: Date.now()});
+    // persist and broadcast
+    broadcastData({type:'chat', payload});
+    chatInput.value = '';
+  };
+
+  // on incoming broadcast chat (data handler will call addChatMessage)
+  // implement handleDataMessage for broadcast 'chat' above.
+
+  // ---------- Create Room (admin) ----------
+  createRoomBtn.onclick = async () => {
+    try{
+      await createPeer();
+      isAdmin = true;
+      adminId = myId;
+      // assign admin to slot 1
+      assignSlotToPeer(myId, 1, 'Admin');
+      // AUTO create local stream
+      localMode = 'video';
+      await createLocalStream(localMode);
+      // show room UI
+      setRoomId(myId);
+      showRoom(true);
+      pendingPanel.style.display = 'block';
+      renderPending();
+      // admin should listen for connections - peer.on('connection') already set up
+    }catch(e){
+      console.error('Create room failed', e);
+    }
+  };
+
+  // ---------- Join Room (visitor) ----------
+  joinRoomBtn.onclick = ()=> { joinArea.style.display = joinArea.style.display === 'none' ? 'block' : 'none'; };
+  joinNow.onclick = async () => {
+    const raw = joinInput.value.trim();
+    if(!raw){
+      alert('Paste invite link or room id');
+      return;
+    }
+    // parse raw for query params
+    const params = new URLSearchParams((raw.indexOf('?')>-1) ? raw.split('?')[1] : raw);
+    const invited = params.get('invite') === '1';
+    const roomParam = params.get('room') || raw;
+    // create local peer
+    try{
+      await createPeer();
+      // get local stream (visitor)
+      localMode = params.get('type') === 'voice' ? 'voice' : 'video';
+      await createLocalStream(localMode);
+      // set admin id
+      adminId = roomParam;
+      setRoomId(adminId);
+      // if invited -> auto join variant
+      if(invited){
+        // connect data and call admin
+        const conn = peer.connect(adminId);
+        conn.on('open', () => {
+          participants[adminId] = participants[adminId] || {};
+          participants[adminId].conn = conn;
+          conn.on('data', d => handleDataMessage(adminId, d));
+          // send invited-join handshake, admin is expected to map user to desired pos or first free
+          conn.send({type:'invited-join', name: 'Guest-' + myId.slice(0,6), pos: params.get('pos') || 0});
+          // call admin
+          const call = peer.call(adminId, localStream);
+          call.on('stream', remoteStream => {
+            // set admin stream into slot1
+            participants[adminId] = participants[adminId] || {};
+            participants[adminId].stream = remoteStream;
+            if(!participants[adminId].slot) assignSlotToPeer(adminId, 1, 'Admin');
+            updateSlotUI(participants[adminId].slot);
+          });
+        });
+      } else {
+        // not invited -> request join (admin approval)
+        visitorRequestJoin(adminId, 'Guest-' + myId.slice(0,6));
+      }
+      // show room UI
+      showRoom(true);
+      // for visitor, put self into first free slot tentatively
+      assignSlotToPeer(myId, findFirstFreeSlot(), 'You');
+      updateSlotUI(participants[myId].slot);
+    }catch(e){
+      console.error(e);
+      alert('Join failed: ' + (e && e.message));
+    }
+  };
+
+  // load existing chat on startup
+  (function initChatLoad(){ loadChat(); })();
+
+  // handle window URL auto-join when opening ?room=...
+  (function autoJoinFromUrl(){
+    const params = new URLSearchParams(location.search);
+    const room = params.get('room');
+    if(room){
+      // show joinArea with parsed values
+      joinArea.style.display = 'block';
+      joinInput.value = location.href;
+      // simulate join click
+      joinNow.click();
+    }
+  })();
+
+  // cleanup on leave
+  leaveBtn.onclick = () => {
+    if(confirm('Leave the room?')) cleanupAndLeave();
+  };
+
+  // make sure badges have numbers already set; add colors
+  for(let i=1;i<=SLOT_COUNT;i++){
+    slots[i].badgeEl.style.background = SLOT_COLORS[i];
+  }
+
+  // handle broadcastData chat reception & admin commands
+  // Here we monkey-patch handleDataMessage to process broadcast/chat
+  // (We already defined above; extend to include chat broadcast handling)
+  const originalHandle = handleDataMessage;
+  // But handleDataMessage is defined; we'll rely on previous cases where broadcast handled
+  // For safety, add a general listener: when data received anywhere, if it's a broadcast chat, append.
+
+  // Note: PeerJS data connection handlers are set when connecting. For broadcast from any peer we use conn.send({type:'broadcast', payload:{type:'chat', ...}})
+
+  // Add safety: ensure slot UI shows even if no stream (placeholder bg)
+  for(let i=1;i<=SLOT_COUNT;i++){
+    const s = slots[i];
+    s.slotEl.style.background = '#111'; // fallback
+    s.whoEl.style.pointerEvents = 'none';
+  }
+
+  // Expose minimal debug on console
+  window.CleanCall = { participants, slotOccupancy, assignSlotToPeer, createPeer };
+
+  // End of closure
+})();
+</script>
+</body>
+</html>
